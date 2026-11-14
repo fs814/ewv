@@ -225,6 +225,48 @@ fn native_webview_can_go_back(wv_id: i64) -> LispResult<bool> {
 }
 
 
+#[defun]
+fn native_webview_reload(wv_id: i64) -> LispResult<()> {
+    with_webview(wv_id, |webview| Ok(webview.reload()))
+}
+/// Call CB with (SOURCE-URI JSON) for every message the page sends with
+/// `chrome.webview.postMessage'.
+#[defun]
+fn native_webview_set_on_web_message(_env: &Env, wv_id: i64, cb: Value) -> LispResult<()> {
+    with_webview(wv_id, |webview| Ok(webview.set_on_web_message(cb)))
+}
+/// Send JSON (a string holding one JSON value) to the page, which gets it
+/// parsed as the `data' of a `message' event on `chrome.webview'.
+#[defun]
+fn native_webview_post_web_message(wv_id: i64, json: String) -> LispResult<()> {
+    with_webview(wv_id, |webview| Ok(webview.post_web_message_json(&json)?))
+}
+/// Run JS at the start of every document the webview loads from now on.
+#[defun]
+fn native_webview_add_script(wv_id: i64, js: String) -> LispResult<()> {
+    with_webview(wv_id, |webview| Ok(webview.add_script_on_document_created(&js)))
+}
+/// Run JS in the current page and call CB with its result as a JSON string.
+#[defun]
+fn native_webview_execute_script(_env: &Env, wv_id: i64, js: String, cb: Value) -> LispResult<()> {
+    with_webview(wv_id, |webview| Ok(webview.eval_js(&js, cb)))
+}
+/// SCHEME is "dark", "light" or "auto" (follow Windows). Applies to every
+/// webview of the profile.
+#[defun]
+fn native_webview_set_color_scheme(wv_id: i64, scheme: String) -> LispResult<()> {
+    with_webview(wv_id, |webview| Ok(webview.set_color_scheme(&scheme)))
+}
+/// Give FRAME's window the keyboard focus, taking it from a webview.
+#[defun]
+fn native_focus_frame(frame: emacs::Value) -> LispResult<()> {
+    let hwnd = get_frame_hwnd(frame)?;
+    unsafe {
+        let _ = SetFocus(Some(hwnd));
+    }
+    Ok(())
+}
+
 // faster then (message)
 #[defun]
 fn native_print(message: String) -> LispResult<()> {
@@ -254,20 +296,26 @@ fn get_frame_hwnd(frame: emacs::Value)-> LispResult<HWND> {
 
 #[defun]
 fn native_process_events(env: &Env) -> LispResult<()> {
-    EVENTS.with(|events| {
-        let events = &mut *events.borrow_mut();
-        while let Some(cb) = events.pop() {
-            cb(env);
+    // Take each queue before running it: a callback may queue more (or pump
+    // messages that do), which must not happen while the queue is borrowed.
+    // Run in arrival order, so web messages reach Lisp in the order the page
+    // sent them, and run them all even if one signals: a dropped callback can
+    // hold a deferral the browser is waiting on.
+    let events = EVENTS.with(|events| std::mem::take(&mut *events.borrow_mut()));
+    for cb in events {
+        cb(env);
+    }
+    let callbacks = CALLBACKS.with(|events| std::mem::take(&mut *events.borrow_mut()));
+    let mut first_error = None;
+    for Callback { rcb, gcb } in callbacks {
+        if let Err(error) = rcb(env, gcb.bind(env)) {
+            first_error.get_or_insert(error);
         }
-    });
-    CALLBACKS.with(|events| -> LispResult<()> {
-        let events = &mut *events.borrow_mut();
-        while let Some(Callback{rcb,  gcb, ..}) = events.pop() {
-            rcb(env, gcb.bind(env))?
-        }
-        Ok(())
-    })?;
-    Ok(())
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 #[allow(unused_variables)]
 fn window_features_to_lisp<'a>(env: &'a Env, features: &ICoreWebView2WindowFeatures) -> LispResult<emacs::Value<'a>>{

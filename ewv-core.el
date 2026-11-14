@@ -29,6 +29,11 @@
   (string-to-number (frame-parameter (or frame (selected-frame)) 'window-id) 10))
 
 
+(defun ec//json (object)
+  "OBJECT (as `json-serialize' takes it) as JSON text for the native module.
+`json-serialize' returns the UTF-8 bytes; the module wants the characters."
+  (decode-coding-string (json-serialize object) 'utf-8))
+
 (defun ec//eval-string (string)
   "Called from js. Always convert result to string"
   (condition-case err

@@ -26,6 +26,10 @@ include!("webview.rs");
 include!("lisp.rs");
 include!("hooks.rs");
 
+// Direct3D 12 sample demos in Emacs buffers (see src/dx12/README.md).
+mod dx12;
+include!("dx12_lisp.rs");
+
 struct Callback {
     rcb: Box<dyn FnOnce(&Env, Value) -> LispResult<()>>,
     gcb: Rc<GlobalRef>,
@@ -35,6 +39,7 @@ thread_local! {
     static WEBVIEWS: RefCell<Vec<Webview>> = RefCell::new(Vec::new());
     static EVENTS: RefCell<Vec<Box<dyn FnOnce(&Env)>>> = RefCell::new(Vec::new());
     static CALLBACKS: RefCell<Vec<Callback>> = RefCell::new(Vec::new());
+    static DX12_VIEWS: RefCell<Vec<dx12::DxView>> = RefCell::new(Vec::new());
 }
 
 pub fn initialize_com() {

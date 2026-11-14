@@ -8,6 +8,7 @@
   :prefix "ewv-browser")
 
 (require 'ewv-core)
+(require 'json)
 
 
 (defcustom eb/default-url "https://www.baidu.com" "ewv-browser-open-url 默认打开的 url")
@@ -31,6 +32,24 @@ See https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/we
 (defvar-local eb//local-id nil "底层 webview 对应的 id")
 (defvar-local eb//local-frame nil "底层 webview 所属 parent HWND 对应的 emacs frame")
 (defvar-local eb//local-pinned nil "当前 tab 是否被 pin")
+(defvar-local eb//local-special nil
+  "Non-nil when the webview shows a page of ewv itself (the RSS reader), not a
+web page.  Such a buffer is left out of pins and saved sessions: reopening its
+URL would give the bare page without the Lisp side that drives it.")
+
+(defcustom eb/color-scheme nil
+  "Whether pages are told to prefer a light or a dark color scheme.
+nil leaves it to Windows.  `emacs' follows the background of the frame the
+webview is created in.  It is a setting of the browser profile, so the last
+webview created decides for all of them."
+  :type '(choice (const :tag "Follow Windows" nil)
+                 (const :tag "Follow the Emacs theme" emacs)
+                 (const :tag "Light" light)
+                 (const :tag "Dark" dark)))
+
+(defvar eb/webview-created-functions nil
+  "Functions called with the webview id and the buffer of each new browser tab,
+before its first page loads.  ewv-plugins uses it to install its scripts.")
 
 (defvar eb//all-buffers nil "所有 ewv-browser buffer")
 (defvar eb//session-urls nil "记录当前 session ewv-browser buffer")
@@ -52,12 +71,19 @@ See https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/we
 
 (defun eb//save-pin-file()
   (setq eb//all-pinned-tabs
-        (cl-loop for buf in eb//all-buffers
+        (cl-loop for buf in (eb//tab-buffers)
                  if (buffer-local-value 'eb//local-pinned buf)
                  collect (ent/webview-get-url (buffer-local-value 'eb//local-id buf))))
-  (with-temp-file eb//pin-file
-    (insert ";; -*- lexical-binding: t; -*-\n")
-    (insert (format "(setq ewv-browser--all-pinned-tabs '%S)" eb//all-pinned-tabs))))
+  ;; This runs from `kill-emacs-hook', where an error stops Emacs from exiting
+  ;; and asks the user what to do.  The user data dir only exists once a
+  ;; webview has been created, so a session that never opened one (only the
+  ;; dx12 demos, say) has nowhere to write: skip when there is nothing to
+  ;; record, create the directory otherwise.
+  (when (or eb//all-pinned-tabs (file-exists-p eb//pin-file))
+    (make-directory (file-name-directory eb//pin-file) t)
+    (with-temp-file eb//pin-file
+      (insert ";; -*- lexical-binding: t; -*-\n")
+      (insert (format "(setq ewv-browser--all-pinned-tabs '%S)" eb//all-pinned-tabs)))))
 
 (eb//read-pin-file)
 (add-hook 'kill-emacs-hook #'eb//save-pin-file)
@@ -67,6 +93,55 @@ See https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/we
   (interactive)
   (dolist (url eb//all-pinned-tabs)
     (eb/open-url url t)))
+
+;;; session
+;; Like appine, remember the tabs that were open when Emacs exited.  Restoring
+;; is a command, not automatic: put `ewv-browser-restore-session' on
+;; `emacs-startup-hook' to get the tabs back at startup.
+(defun eb//tab-buffers ()
+  "The live browser buffers that show web pages, oldest first."
+  (cl-remove-if-not (lambda (buf)
+                      (and (buffer-live-p buf)
+                           (buffer-local-value 'eb//local-id buf)
+                           (not (buffer-local-value 'eb//local-special buf))))
+                    (reverse eb//all-buffers)))
+
+(defun eb//session-file ()
+  (expand-file-name "ewv-browser-session.el" (eb//get-user-data-dir)))
+
+(defun eb//save-session ()
+  "Record the URLs of the open tabs.  Runs from `kill-emacs-hook'."
+  (let ((urls (delete "about:blank"
+                      (mapcar (lambda (buf)
+                                (ent/webview-get-url (buffer-local-value 'eb//local-id buf)))
+                              (eb//tab-buffers))))
+        (file (eb//session-file)))
+    ;; As for the pin file: an error here would stop Emacs from exiting, and
+    ;; the directory only exists once a webview has been created.
+    (when (or urls (file-exists-p file))
+      (make-directory (file-name-directory file) t)
+      (with-temp-file file
+        (prin1 urls (current-buffer))))))
+
+(add-hook 'kill-emacs-hook #'eb//save-session)
+
+(defun eb/restore-session ()
+  "Reopen the tabs that were open when Emacs last exited.
+Tabs that are already open (reopened pinned tabs, say) are not duplicated."
+  (interactive)
+  (let ((urls (and (file-exists-p (eb//session-file))
+                   (with-temp-buffer
+                     (insert-file-contents (eb//session-file))
+                     (ignore-errors (read (current-buffer))))))
+        (open (mapcar (lambda (buf)
+                        (ent/webview-get-url (buffer-local-value 'eb//local-id buf)))
+                      (eb//tab-buffers)))
+        (count 0))
+    (dolist (url urls)
+      (when (and (stringp url) (not (member url open)))
+        (eb/open-url url)
+        (cl-incf count)))
+    (message "ewv-browser: restored %d tab%s" count (if (= count 1) "" "s"))))
 
 (defvar eb//environment nil "假设 ewv-browser 共享一个 webview environment")
 
@@ -83,7 +158,19 @@ See https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/we
 
 (defun eb//webview-new(frame)
   (eb//ensure-environment)
-  (ent/webview-new frame eb//environment))
+  (let ((id (ent/webview-new frame eb//environment)))
+    (when eb/color-scheme
+      (ent/webview-set-color-scheme
+       id (symbol-name (if (eq eb/color-scheme 'emacs)
+                           (frame-parameter frame 'background-mode)
+                         eb/color-scheme))))
+    id))
+
+(defun eb//check-user-data-dir ()
+  "Signal an error if another process holds the browser profile."
+  (when (and (file-exists-p (expand-file-name "lockfile" (eb//get-user-data-dir)))
+             (length= eb//all-buffers 0))
+    (user-error "User Data Dir %s is locked" (eb//get-user-data-dir))))
 
 (defun eb/focus-webpage ()
   (interactive)
@@ -201,17 +288,17 @@ See https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/we
    ))
 
 (defun eb//on-focus-change(focused buffer)
+  "When the page gets the keyboard focus (a click on it), select its window."
   (when focused
-    (let (w (get-buffer-window))
+    (let ((w (get-buffer-window buffer)))
       (and (window-live-p w)
+           (not (eq w (selected-window)))
            (select-window w)))))
 
 (defun eb/open-url (url &optional pin)
   "在当前 frame 新建一个 buffer 打开指定的 url。"
   (interactive (list (read-string (format "URL [%s]: " eb/default-url))))
-  (when (and (file-exists-p (expand-file-name "lockfile" (eb//get-user-data-dir)))
-             (length= eb//all-buffers 0))
-    (user-error "User Data Dir %s is locked" (eb//get-user-data-dir)))
+  (eb//check-user-data-dir)
   (when (string-empty-p url)
     (setq url eb/default-url))
   (setq url (eb//normalize-url url))
@@ -225,6 +312,7 @@ See https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/we
     ;; update tab-bar
     (ent/webview-set-on-history-changed eb-id #'(lambda () (with-current-buffer eb-buffer (rename-buffer (eb//format-title eb//local-id (ent/webview-get-document-title eb//local-id))))))
     (ent/webview-set-on-focus eb-id (lambda (focused) (eb//on-focus-change focused eb-buffer)))
+    (run-hook-with-args 'eb/webview-created-functions eb-id eb-buffer)
     (with-current-buffer eb-buffer
       (eb/mode)
       (setq-local eb//local-id eb-id)
@@ -234,7 +322,19 @@ See https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/we
 
 (defun eb/open-file (file)
   (interactive "fFile: ")
+  (when (and (featurep 'recentf) (file-regular-p file))
+    (recentf-add-file (expand-file-name file)))
   (eb/open-url (eb//normalize-url file)))
+
+(defun eb/open-file-from-recentf ()
+  "Open a recently visited file in a new ewv buffer."
+  (interactive)
+  (if (bound-and-true-p recentf-list)
+      (eb/open-file
+       (expand-file-name
+        (completing-read "Recent file: " (mapcar #'abbreviate-file-name recentf-list)
+                         nil t nil 'file-name-history)))
+    (call-interactively #'eb/open-file)))
 
 (defun eb/kill-all()
   "关闭 ewv-browser 所有 buffer"
@@ -247,7 +347,7 @@ See https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/we
   (interactive)
   (when (file-executable-p eb/edge-path)
     (setq eb//session-urls (mapcar (lambda (buf) (ent/webview-get-url (buffer-local-value 'eb//local-id buf)))
-                                   eb//all-buffers))
+                                   (eb//tab-buffers)))
     (eb/kill-all)
     (let ((user-data-dir (eb//get-user-data-dir)))
       ;; webview2 退出之后还需要一段时间才会完整退出
@@ -298,6 +398,151 @@ See https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/we
   (setq-local eb//local-pinned nil)
   (force-mode-line-update))
 
+;;; driving the page while the focus is in Emacs
+;; The counterpart of appine's "use it like a buffer": the usual Emacs keys for
+;; scrolling, searching and copying act on the page (see `ewv-browser-mode-map').
+(defun eb//js (js)
+  "Run JS in the current buffer's page, ignoring its result."
+  (unless eb//local-id
+    (user-error "Not an ewv-browser buffer"))
+  (ent/webview-eval-js eb//local-id js #'ignore))
+
+(defun eb/reload ()
+  "Reload the page."
+  (interactive)
+  (ent/webview-reload eb//local-id))
+
+(defun eb/scroll-up ()
+  "Scroll the page forward by almost a screen."
+  (interactive)
+  (eb//js "window.scrollBy(0, window.innerHeight * 0.9)"))
+
+(defun eb/scroll-down ()
+  "Scroll the page back by almost a screen."
+  (interactive)
+  (eb//js "window.scrollBy(0, -window.innerHeight * 0.9)"))
+
+(defun eb/scroll-line-up ()
+  "Scroll the page forward a little."
+  (interactive)
+  (eb//js "window.scrollBy(0, 60)"))
+
+(defun eb/scroll-line-down ()
+  "Scroll the page back a little."
+  (interactive)
+  (eb//js "window.scrollBy(0, -60)"))
+
+(defun eb/scroll-to-top ()
+  "Scroll to the top of the page."
+  (interactive)
+  (eb//js "window.scrollTo(0, 0)"))
+
+(defun eb/scroll-to-bottom ()
+  "Scroll to the bottom of the page."
+  (interactive)
+  (eb//js "window.scrollTo(0, document.documentElement.scrollHeight)"))
+
+(defvar-local eb//find-string nil "The last string searched for in this page.")
+
+(defun eb/find (string &optional backward)
+  "Find the next occurrence of STRING in the page, or the previous if BACKWARD.
+The search wraps around.  Repeat with `ewv-browser-find-next' and
+`ewv-browser-find-previous'."
+  (interactive (list (read-string (if eb//find-string
+                                      (format "Find in page (default %s): " eb//find-string)
+                                    "Find in page: ")
+                                  nil nil eb//find-string)))
+  (when (or (null string) (string-empty-p string))
+    (user-error "Nothing to search for"))
+  (setq eb//find-string string)
+  (eb//js (format "window.find(%s, false, %s, true)"
+                  (json-encode-string string) (if backward "true" "false"))))
+
+(defun eb/find-next ()
+  "Find the next occurrence of the last search string."
+  (interactive)
+  (if eb//find-string (eb/find eb//find-string) (call-interactively #'eb/find)))
+
+(defun eb/find-previous ()
+  "Find the previous occurrence of the last search string."
+  (interactive)
+  (if eb//find-string (eb/find eb//find-string t) (call-interactively #'eb/find)))
+
+(defun eb/copy-selection ()
+  "Copy the text selected in the page to the kill ring."
+  (interactive)
+  (ent/webview-execute-script
+   eb//local-id "window.getSelection().toString()"
+   (lambda (json)
+     (let ((text (ignore-errors (json-read-from-string json))))
+       (if (and (stringp text) (not (string-empty-p text)))
+           (progn (kill-new text)
+                  (message "Copied %d characters from the page" (length text)))
+         (message "Nothing is selected in the page"))))))
+
+(defun eb/copy-url ()
+  "Copy the URL of the page to the kill ring."
+  (interactive)
+  (let ((url (ent/webview-get-url eb//local-id)))
+    (kill-new url)
+    (message "%s" url)))
+
+(defun eb/next-tab (&optional n)
+  "Switch to the Nth next ewv-browser buffer, in the order they were opened."
+  (interactive "p")
+  (let* ((tabs (cl-remove-if-not #'buffer-live-p (reverse eb//all-buffers)))
+         (i (cl-position (current-buffer) tabs)))
+    (when tabs
+      (switch-to-buffer (nth (mod (+ (or i -1) (or n 1)) (length tabs)) tabs)))))
+
+(defun eb/previous-tab (&optional n)
+  "Switch to the Nth previous ewv-browser buffer."
+  (interactive "p")
+  (eb/next-tab (- (or n 1))))
+
+;;; org-mode
+(defcustom eb/use-for-org-links nil
+  "Non-nil to open the web and file links of Org buffers in ewv.
+File links are taken only for the types in `ewv-browser-org-file-extensions'."
+  :type 'boolean)
+
+(defcustom eb/org-file-extensions
+  '("pdf" "html" "htm" "svg" "png" "jpg" "jpeg" "gif" "webp" "mp4" "webm" "mp3" "wav" "ogg")
+  "Extensions of the files an Org file link opens in ewv.
+Keep it to what the webview can show; it downloads anything else."
+  :type '(repeat string))
+
+(defun eb/toggle-use-for-org-links ()
+  "Toggle opening the links of Org buffers in ewv."
+  (interactive)
+  (setq eb/use-for-org-links (not eb/use-for-org-links))
+  (message "Org links open in ewv: %s" (if eb/use-for-org-links "on" "off")))
+
+(declare-function org-element-context "org-element")
+(declare-function org-element-type "org-element")
+(declare-function org-element-property "org-element")
+
+(defun eb//org-open-at-point ()
+  "Open the Org link at point in ewv, if `ewv-browser-use-for-org-links' says so.
+On `org-open-at-point-functions': returning nil leaves the link to Org."
+  (when eb/use-for-org-links
+    (let ((context (ignore-errors (org-element-context))))
+      (when (eq (org-element-type context) 'link)
+        (let ((type (org-element-property :type context))
+              (path (org-element-property :path context)))
+          (cond
+           ((member type '("http" "https"))
+            (eb/open-url (concat type ":" path))
+            t)
+           ((and (equal type "file")
+                 (member (downcase (or (file-name-extension path) "")) eb/org-file-extensions)
+                 (file-exists-p path))
+            (eb/open-file path)
+            t)))))))
+
+(with-eval-after-load 'org
+  (add-hook 'org-open-at-point-functions #'eb//org-open-at-point))
+
 (tool-bar-local-item "left-arrow" 'eb/go-back 'eb/go-back eb/tool-bar-map :enable '(ent/webview-can-go-back eb//local-id))
 
 (tool-bar-local-item "right-arrow" 'eb/go-forward 'eb/go-forward eb/tool-bar-map :enable '(ent/webview-can-go-forward eb//local-id))
@@ -335,6 +580,24 @@ See https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/we
     (define-key map (kbd "t") #'eb/toggle-visibility)
     (define-key map (kbd "e") #'eb/load-new-url)
     (define-key map (kbd "f") #'eb/load-new-file)
+    (define-key map (kbd "r") #'eb/reload)
+    (define-key map (kbd "w") #'eb/copy-url)
+    (define-key map [remap revert-buffer] #'eb/reload)
+    (define-key map [remap scroll-up-command] #'eb/scroll-up)
+    (define-key map [remap scroll-down-command] #'eb/scroll-down)
+    (define-key map [remap next-line] #'eb/scroll-line-up)
+    (define-key map [remap previous-line] #'eb/scroll-line-down)
+    (define-key map [remap beginning-of-buffer] #'eb/scroll-to-top)
+    (define-key map [remap end-of-buffer] #'eb/scroll-to-bottom)
+    (define-key map [remap isearch-forward] #'eb/find)
+    (define-key map [remap isearch-backward] #'eb/find-previous)
+    (define-key map [remap kill-ring-save] #'eb/copy-selection)
+    (define-key map (kbd "C-c C-s") #'eb/find-next)
+    (define-key map (kbd "C-c C-r") #'eb/find-previous)
+    (define-key map (kbd "C-c C-f") #'eb/go-forward)
+    (define-key map (kbd "C-c C-b") #'eb/go-back)
+    (define-key map (kbd "C-c C-n") #'eb/next-tab)
+    (define-key map (kbd "C-c C-p") #'eb/previous-tab)
     map))
 
 (define-derived-mode eb/mode special-mode "EWV-Browser"

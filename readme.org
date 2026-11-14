@@ -33,7 +33,47 @@
        set WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--proxy-server=127.0.0.1:7897"
        #+end_src
     2. 也可以使用 ZeroOmega 插件。
+11. Like a buffer (the focus in Emacs): the usual keys act on the page
+    1. =C-v= / =M-v= / =C-n= / =C-p= / =M-<= / =M->= scroll, =r= or =g= reloads
+    2. =C-s= / =C-r= find in the page (=C-c C-s= / =C-c C-r= repeat), =M-w= copies the page's selection, =w= copies its URL
+    3. =C-c C-f= / =C-c C-b= history forward / back, =C-c C-n= / =C-c C-p= next / previous ewv buffer
+12. =ewv-browser-restore-session= reopens the tabs that were open when Emacs last exited (put it on =emacs-startup-hook=)
+13. =ewv-browser-use-for-org-links= (toggle: =ewv-browser-toggle-use-for-org-links=) opens the http(s) links of Org buffers, and file links to PDFs, images, video and audio, in ewv
+14. =ewv-browser-open-file-from-recentf= picks the file from the recent files
+15. =ewv-browser-color-scheme=: ='emacs= makes pages follow the light or dark Emacs theme
 
+* ewv-rss
+An RSS reader in a buffer, the Windows counterpart of the one in [[https://github.com/fs814/appine][appine]]: feed tree with unread counts, article list, article. Run =cargo build= first; the prebuilt =ewv_native.dll= lacks the functions it needs.
+#+begin_src emacs-lisp
+(setq ewv-rss-path "~/.emacs.d/elfeed/elfeed.org") ; an elfeed-org file, or a directory of them
+;; M-x ewv-rss
+#+end_src
+1. Headings of the file are folders; a heading that is a link (=[[url][name]]=) or a bare URL is a feed. Without =ewv-rss-path=, =ewv-rss= asks for the file once and saves the answer.
+2. Emacs fetches the feeds (when the reader opens, then every =ewv-rss-refresh-interval= seconds) and keeps the articles in SQLite under =ewv-rss-data-directory= (=%LOCALAPPDATA%\ewv-rss=). The schema is appine's, so a copy of an =appine-rss= directory works. =ewv-rss-org-mirror= also writes every article to an Org file, as appine does.
+3. Keys, in the page and in the buffer: =j= / =k= (or =n= / =p=) next / previous article, =s= star, =u= read / unread, =o= open the original in a new ewv buffer, =b= open it in the default browser, =r= fetch, =A= mark the list read, =SPC= scroll the article
+4. In the buffer only: =i= focus the page, =e= edit the feed file, =G= reload it. In the page only: =Esc= or =C-g= back to Emacs.
+5. =ewv-rss-show-failures= lists the feeds the last fetch could not get. url.el does the fetching, so a proxy is set with =url-proxy-services= (or the =http_proxy= / =https_proxy= variables), not with the WebView2 one above.
+6. Articles are shown in a sandboxed frame: their scripts do not run (so no MathJax), and their links open in a new ewv buffer.
+
+* ewv-plugins
+Scripts every browser tab runs in every page, after appine's two browser plugins. =ewv-plugins-link-hints= / =ewv-plugins-selection-assistant= set to nil turn them off (for tabs opened afterwards).
+1. Link hints: with the focus in the page press =f= (=ewv-plugins-link-hints-key=), type the label of a link or control to click it; =Esc= cancels. From Emacs: =F=.
+2. Selection assistant: select text in a page and a toolbar appears.
+   1. =Search= opens =ewv-plugins-search-url= + the selection in a new buffer
+   2. =Capture= runs =org-protocol-capture= with the template =ewv-plugins-capture-template= (="c"=), which gets the URL, title and selection:
+      #+begin_src emacs-lisp
+      (add-to-list 'org-capture-templates
+                   '("c" "web" entry (file "inbox.org")
+                     "* TODO [[%:link][%:description]]\n\n %i" :immediate-finish t))
+      #+end_src
+   3. =Translate= and =Ask AI= call an OpenAI-compatible chat completions API from Emacs. They appear once =ewv-plugins-ai-model= is set; the key is =ewv-plugins-ai-key=, or the auth-source password for the host of =ewv-plugins-ai-url=.
+
+* ewv-dx12
+Direct3D 12 demos in Emacs buffers, the Windows counterpart of the Metal demos in [[https://github.com/fs814/appine][appine]]. See [[file:src/dx12/README.md][src/dx12/README.md]].
+1. =ewv-dx12-triangle= a colorful, rotating triangle
+2. =ewv-dx12-raytracing= a path-traced grid of Cornell boxes; needs a GPU with DirectX Raytracing, otherwise the buffer says why it cannot run
+3. In a demo buffer: =q= bury, =k= kill (closes the view), =s= status and frame count, =g= re-sync the view with its window
+4. Building the module now needs =dxc.exe= from the Windows SDK (it compiles the ray tracing shaders); set =DXC= to its path if it is not found. The prebuilt =ewv_native.dll= in the repo root predates these demos, so build with =cargo build= to get them.
 
 * todo-list
 1. [ ] rust 回调 elisp 代码的异步消息机制需要改为 =open_channel= 需要 patch =emacs-module-rs=

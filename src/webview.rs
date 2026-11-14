@@ -1020,6 +1020,81 @@ impl Webview {
         }
         // println!("eval_js end");
     }
+    pub fn reload(&self) {
+        unsafe { self.raw.Reload().unwrap() }
+    }
+    /// Call CB with (SOURCE-URI JSON) for every `chrome.webview.postMessage`
+    /// from the page. This is the page -> Emacs half of the message channel
+    /// used by ewv-rss and ewv-plugins; unlike the `bridge` host object it
+    /// carries data only, so the Lisp side decides what a message may do.
+    pub fn set_on_web_message(&self, cb: Value) {
+        let mut token = 0;
+        let gcb = Rc::new(cb.make_global_ref());
+        let controller = self.controller.clone();
+        let handler = WebMessageReceivedEventHandler::create(Box::new(move |_webview, args| {
+            let Some(args) = args else { return Ok(()) };
+            unsafe {
+                let mut source = PWSTR::default();
+                args.Source(&mut source)?;
+                let source = take_pwstr(source);
+                let mut json = PWSTR::default();
+                args.WebMessageAsJson(&mut json)?;
+                let json = take_pwstr(json);
+                CALLBACKS.with(|events| {
+                    events.borrow_mut().push(Callback {
+                        rcb: Box::new(move |env: &Env, cb: Value| -> LispResult<()> {
+                            env.call(cb, (source, json)).map(|_| ())
+                        }),
+                        gcb: Rc::clone(&gcb),
+                    });
+                });
+                notify_emacs_for_webview(&controller);
+            }
+            Ok(())
+        }));
+        (unsafe { self.raw.add_WebMessageReceived(&handler, &mut token) }).unwrap();
+    }
+    /// The Emacs -> page half: the page receives the parsed JSON as the `data`
+    /// of a `message` event on `chrome.webview`.
+    pub fn post_web_message_json(&self, json: &str) -> windows::core::Result<()> {
+        let json = HSTRING::from(json);
+        unsafe { self.raw.PostWebMessageAsJson(PCWSTR::from_raw(json.as_ptr())) }
+    }
+    /// Run JS in every document this webview loads from now on, before the
+    /// page's own scripts. Waits until the script is registered, so a
+    /// navigation started right after already gets it.
+    pub fn add_script_on_document_created(&self, js: &str) {
+        let js = HSTRING::from(js);
+        let webview = self.raw.clone();
+        AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation(
+            Box::new(move |handler| unsafe {
+                Ok(webview
+                    .AddScriptToExecuteOnDocumentCreated(PCWSTR::from_raw(js.as_ptr()), &handler)?)
+            }),
+            Box::new(|error_code, _id| {
+                error_code?;
+                Ok(())
+            }),
+        )
+        .unwrap();
+    }
+    /// SCHEME is "dark", "light", or anything else for the system setting.
+    /// The setting belongs to the profile, so it applies to every webview.
+    pub fn set_color_scheme(&self, scheme: &str) {
+        let scheme = match scheme {
+            "dark" => COREWEBVIEW2_PREFERRED_COLOR_SCHEME_DARK,
+            "light" => COREWEBVIEW2_PREFERRED_COLOR_SCHEME_LIGHT,
+            _ => COREWEBVIEW2_PREFERRED_COLOR_SCHEME_AUTO,
+        };
+        let webview: ICoreWebView2_28 = self.raw.cast().unwrap();
+        unsafe {
+            webview
+                .Profile()
+                .unwrap()
+                .SetPreferredColorScheme(scheme)
+                .unwrap();
+        }
+    }
     pub fn eval_js_cdp(&self, js: &str, _cb: Value) {
         let raw = self.raw.clone();
         let method = pwstr_from_str("Runtime.evaluate");

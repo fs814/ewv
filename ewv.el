@@ -23,4 +23,13 @@
 
 (require 'ewv-browser)
 
+;; Direct3D 12 demos: M-x ewv-dx12-triangle, M-x ewv-dx12-raytracing
+(require 'ewv-dx12)
+
+;; RSS reader: M-x ewv-rss
+(require 'ewv-rss)
+
+;; Link hints and the selection assistant in every browser tab
+(require 'ewv-plugins)
+
 ;; (require 'ewv-mode-line)
