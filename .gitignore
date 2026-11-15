@@ -1,2 +1,16 @@
 /target
 /extensions/*
+# Vulkan-Samples dependencies and assets: downloaded by src/vulkan/fetch_deps.ps1
+/src/vulkan/Vulkan-Samples/third_party/*/
+/src/vulkan/Vulkan-Samples/assets/
+# Its CMake build (src/vulkan/build.ps1) and the library it produces
+/build
+/ewv-vulkan-samples.dll
+/ewv-vulkan-samples.pdb
+# The samples' GUI saves its layout in the working directory
+imgui.ini
+# winine: its CMake build (build_ewv.ps1), the module it produces, and copies
+# renamed away while an Emacs had them loaded
+/winine/build
+/winine/winine_native.dll
+/winine/winine_native.dll.old*

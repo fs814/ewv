@@ -26,6 +26,12 @@
 ;; Direct3D 12 demos: M-x ewv-dx12-triangle, M-x ewv-dx12-raytracing
 (require 'ewv-dx12)
 
+;; Khronos Vulkan-Samples: M-x ewv-vulkan-sample (src/vulkan/README.md)
+(require 'ewv-vulkan)
+
+;; Microsoft DirectX-Graphics-Samples: M-x ewv-dxsample (src/dxsamples/README.md)
+(require 'ewv-dxsamples)
+
 ;; RSS reader: M-x ewv-rss
 (require 'ewv-rss)
 

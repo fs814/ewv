@@ -1,0 +1,22 @@
+# Pinned dependencies of Vulkan-Samples b4fb432b80234e54cf7be7411f20b65494a5b0f5
+# path<TAB>url<TAB>commit   (upstream .gitmodules and its submodule commits)
+assets	https://github.com/KhronosGroup/Vulkan-Samples-Assets	2e79ef91d398fc2c50f1802cf94a842a01e9f964
+third_party/ai-ml-sdk-vgf-library	https://github.com/arm/ai-ml-sdk-vgf-library	5127d06a4f2cbb6699a748006ce52ee570278b7e
+third_party/astc	https://github.com/ARM-software/astc-encoder	30aabb3f42406df45a910d8496f9bee17eeba9bb
+third_party/flatbuffers	https://github.com/google/flatbuffers	1c514626e83c20fffa8557e75641848e1e15cd5e
+third_party/fmt	https://github.com/fmtlib/fmt	40626af88bd7df9a5fb80be7b25ac85b122d6c21
+third_party/glfw	https://github.com/glfw/glfw	21fea01161e0d6b70c0c5c1f52dc8e7a7df14a50
+third_party/glm	https://github.com/g-truc/glm	fce2abd01ce21063bd25ba67c9318be83bf48813
+third_party/hwcpipe	https://github.com/ARM-software/HWCPipe	e4cfb5557aaa9e95a32f8b3d2f0f3f3f781f48ea
+third_party/imgui	https://github.com/ocornut/imgui	da29b776eed289db16a8527e5f16a0e1fa540251
+third_party/ktx	https://github.com/KhronosGroup/KTX-Software	a3603eda5c068cd91ab9729b3dddd81e5967ed88
+third_party/octomap	https://github.com/OctoMap/octomap.git	766e96c77e4fc4e7d66345a27546a1f4f33ddd4b
+third_party/opencl	https://github.com/KhronosGroup/OpenCL-Headers.git	59452533d2afa817bc2dc0da4f783097f4cdbcb0
+third_party/spdlog	https://github.com/gabime/spdlog	6fa36017cfd5731d617e1a934f0e5ea9c4445b13
+third_party/spirv-cross	https://github.com/KhronosGroup/SPIRV-Cross	a0fba56c34a6700f1724bf9b751da5b488a3775c
+third_party/stb	https://github.com/nothings/stb	2c2908f50515dcd939f24be261c3ccbcd277bb49
+third_party/tinygltf	https://github.com/syoyo/tinygltf	37250b3470b517fd6823ee82d6e0495695bb7924
+third_party/tracy	https://github.com/wolfpld/tracy.git	37aff70dfa50cf6307b3fee6074d627dc2929143
+third_party/vma	https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator	a6bfc237255a6bac1513f7c1ebde6d8aed6b5191
+third_party/volk	https://github.com/zeux/volk	d979819fd03de3a7606d6e23d6ff4968942599da
+third_party/vulkan	https://github.com/KhronosGroup/Vulkan-Headers	b5c8f996196ba4aa6d8f97e52b5d3b6e70f7e4e2

@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>winine RSS</title>
+<!--
+  The page of winine-rss.el: sidebar (feed tree), article list, reader.
+
+  It holds no data of its own.  Everything comes from Emacs as web messages
+  (chrome.webview 'message' events) and every action goes back the same way
+  (chrome.webview.postMessage); see `winine-rss--on-message' for the protocol.
+
+  Feed content is untrusted HTML.  It is only ever shown inside the sandboxed
+  <iframe> (no scripts, no forms, no navigation of this page); everything this
+  document itself displays is set with textContent.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff; --pane: #f5f5f7; --line: #dcdce0; --text: #1d1d1f; --dim: #6e6e73;
+    --sel: rgba(120, 120, 128, .2); --hover: rgba(120, 120, 128, .1);
+    --accent: #0a64d6; --badge: rgba(10, 100, 214, .15); --badge-gray: rgba(120, 120, 128, .2);
+    --star: #f5b400;
+    --w-side: 220px; --w-list: 340px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1e1e20; --pane: #28282b; --line: #3a3a3e; --text: #f2f2f4; --dim: #a1a1a8;
+      --accent: #58a6ff; --badge: rgba(88, 166, 255, .3);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: grid; grid-template-columns: var(--w-side) 5px var(--w-list) 5px minmax(0, 1fr);
+    font: 13px/1.4 "Segoe UI", system-ui, sans-serif; color: var(--text); background: var(--bg);
+    overflow: hidden; user-select: none; cursor: default;
+  }
+  .divider { cursor: col-resize; background: transparent; border-left: 1px solid var(--line); }
+  .divider:hover, .divider.drag { background: var(--sel); }
+  .pane { min-width: 0; display: flex; flex-direction: column; height: 100vh; }
+  .scroll { flex: 1; overflow-y: auto; min-height: 0; }
+
+  /* sidebar */
+  #side { background: var(--pane); }
+  #side header { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 10px; border-bottom: 1px solid var(--line); flex: none; }
+  #side header svg.logo { width: 22px; height: 22px; flex: none; }
+  #side header b { flex: 1; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #refresh { border: 0; background: transparent; color: var(--dim); width: 26px; height: 26px; border-radius: 6px; padding: 3px; cursor: pointer; }
+  #refresh:hover { background: var(--hover); color: var(--text); }
+  #refresh svg { width: 100%; height: 100%; display: block; }
+  #refresh.spin svg { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #tree { padding: 6px 0; }
+  .node { display: flex; align-items: center; height: 28px; margin: 0 8px; padding-right: 8px; border-radius: 6px; }
+  .node:hover { background: var(--hover); }
+  .node.sel { background: var(--sel); }
+  .node .twisty { width: 16px; flex: none; text-align: center; color: var(--dim); font-size: 10px; }
+  .node .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .node.group .name { font-weight: 600; }
+  .badge { flex: none; min-width: 26px; padding: 0 7px; margin-left: 6px; border-radius: 8px; background: var(--badge); font-size: 11px; font-weight: 700; line-height: 16px; text-align: center; }
+  .badge.gray { background: var(--badge-gray); }
+  .badge:empty { display: none; }
+
+  /* article list */
+  #listhead { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 12px; border-bottom: 1px solid var(--line); flex: none; }
+  #listtitle { flex: 1; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .linkbtn { border: 0; background: transparent; color: var(--accent); font: inherit; padding: 2px 4px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+  .linkbtn:hover { text-decoration: underline; }
+  .linkbtn:disabled { color: var(--dim); cursor: default; text-decoration: none; }
+  .item { margin: 2px 4px; padding: 8px 10px; border-radius: 6px; }
+  .item:hover { background: var(--hover); }
+  .item.sel { background: var(--sel); }
+  .item .title { font-size: 14px; font-weight: 400; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .item.unread .title { font-weight: 700; }
+  .item .star { color: var(--star); }
+  .item .snippet { color: var(--dim); font-size: 12px; margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .item .foot { display: flex; align-items: center; margin-top: 4px; color: var(--dim); font-size: 11px; }
+  .item .foot .src { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item .foot .src b { font-weight: 700; }
+  .item .new { flex: none; padding: 0 6px; border-radius: 4px; background: var(--badge); color: var(--text); font-size: 10px; font-weight: 700; line-height: 15px; }
+  .item:not(.unread) .new { display: none; }
+  .empty { padding: 30px 16px; color: var(--dim); text-align: center; }
+
+  /* reader */
+  #readhead { display: flex; align-items: center; gap: 4px; min-height: 44px; padding: 4px 16px; border-bottom: 1px solid var(--line); flex: none; flex-wrap: wrap; }
+  #meta { flex: 1; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 80px; }
+  #starbtn.on { color: var(--star); }
+  #frame { flex: 1; width: 100%; border: 0; min-height: 0; background: transparent; }
+  #reader.blank #readhead > *, #reader.blank #frame { visibility: hidden; }
+  #hint { position: absolute; right: 16px; bottom: 10px; color: var(--dim); font-size: 11px; pointer-events: none; }
+  #reader { position: relative; }
+  #reader:not(.blank) #hint { display: none; }
+</style>
+</head>
+<body>
+  <div id="side" class="pane">
+    <header>
+      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><rect width="24" height="24" rx="5" fill="#f78422"/><circle cx="7" cy="17" r="2" fill="#fff"/><path d="M5 10.5a8.5 8.5 0 0 1 8.5 8.5M5 5.5A13.5 13.5 0 0 1 18.5 19" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/></svg>
+      <b>winine RSS</b>
+      <button id="refresh" title="Refresh feeds (r)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/></svg></button>
+    </header>
+    <div id="tree" class="scroll"></div>
+  </div>
+  <div class="divider" data-var="--w-side" data-min="150" data-max="400"></div>
+  <div id="listpane" class="pane">
+    <div id="listhead"><span id="listtitle"></span><button id="allread" class="linkbtn" title="Mark every article in this list as read (A)">Mark all read</button></div>
+    <div id="list" class="scroll" tabindex="-1"></div>
+  </div>
+  <div class="divider" data-var="--w-list" data-min="240" data-max="700"></div>
+  <div id="reader" class="pane blank">
+    <div id="readhead">
+      <span id="meta"></span>
+      <button id="starbtn" class="linkbtn" title="Star (s)"></button>
+      <button id="readbtn" class="linkbtn" title="Toggle read (u)"></button>
+      <button id="origbtn" class="linkbtn" title="Open the article in a new winine buffer (o)">Read Original</button>
+      <button id="extbtn" class="linkbtn" title="Open the article in the default browser (b)">Open in Browser</button>
+    </div>
+    <iframe id="frame" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>
+    <div id="hint">j/k articles · s star · u read/unread · o original · b browser · r refresh · A all read · Esc back to Emacs</div>
+  </div>
+
+<script>
+'use strict';
+const wv = window.chrome && window.chrome.webview;
+const send = m => { if (wv) wv.postMessage(m); };
+const $ = id => document.getElementById(id);
+
+const S = {
+  tree: [],          // [{id, name, kind: 'unread'|'starred'|'group'|'feed', children}]
+  names: {},         // node id -> name
+  counts: {},        // node id -> unread (or starred) count
+  node: null,        // selected node id
+  items: [],         // articles of the selected node, newest first
+  cur: null,         // id of the article shown (or being fetched)
+  article: null,     // the article shown in the reader
+  collapsed: new Set(),
+};
+
+const store = {
+  get(key, fallback) { try { const v = localStorage.getItem(key); return v === null ? fallback : JSON.parse(v); } catch (e) { return fallback; } },
+  set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* storage is optional */ } },
+};
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+// ---------------------------------------------------------------- dates
+function fmtDate(ts, withTime) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000), diff = Date.now() - d.getTime(), day = 864e5;
+  if (diff >= 0 && diff < 14 * day) {
+    const days = Math.floor(diff / day);
+    return days === 0 ? 'today' : days === 1 ? '1 day ago' : days + ' days ago';
+  }
+  const p = n => String(n).padStart(2, '0');
+  let s = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  if (withTime) s += ` ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return s;
+}
+
+// ---------------------------------------------------------------- sidebar
+function renderTree() {
+  const root = $('tree');
+  root.textContent = '';
+  const walk = (nodes, depth, hidden) => {
+    for (const n of nodes) {
+      S.names[n.id] = n.name;
+      const row = el('div', 'node ' + n.kind + (n.id === S.node ? ' sel' : ''));
+      row.dataset.id = n.id;
+      row.style.paddingLeft = (4 + depth * 14) + 'px';
+      if (hidden) row.hidden = true;
+      const group = n.children && n.children.length > 0;
+      const closed = S.collapsed.has(n.name);
+      const twisty = el('span', 'twisty', group ? (closed ? '▶' : '▼') : '');
+      if (group) twisty.dataset.toggle = n.name;
+      row.append(twisty, el('span', 'name', n.name), el('span', 'badge' + (n.kind === 'starred' ? ' gray' : '')));
+      row.title = n.name;
+      root.append(row);
+      if (group) walk(n.children, depth + 1, hidden || closed);
+    }
+  };
+  walk(S.tree, 0, false);
+  renderCounts();
+}
+
+function renderCounts() {
+  for (const row of $('tree').children) {
+    const n = S.counts[row.dataset.id] || 0;
+    row.lastChild.textContent = n > 0 ? String(n) : '';
+  }
+}
+
+function selectNode(id) {
+  if (!(id in S.names)) return;
+  S.node = id;
+  for (const row of $('tree').children) row.classList.toggle('sel', row.dataset.id === id);
+  $('listtitle').textContent = S.names[id];
+  S.items = [];
+  renderList(false);
+  send({ op: 'select', node: id });
+}
+
+$('tree').addEventListener('click', e => {
+  const toggle = e.target.dataset && e.target.dataset.toggle;
+  if (toggle !== undefined) {
+    if (S.collapsed.has(toggle)) S.collapsed.delete(toggle); else S.collapsed.add(toggle);
+    store.set('winine-rss-collapsed', [...S.collapsed]);
+    renderTree();
+    return;
+  }
+  const row = e.target.closest('.node');
+  if (row) selectNode(row.dataset.id);
+});
+
+// ---------------------------------------------------------------- list
+const parser = new DOMParser();
+function snippet(html) {
+  if (!html) return '';
+  // DOMParser documents are inert: no scripts run, no resources load.
+  const text = parser.parseFromString(html, 'text/html').body.textContent.replace(/\s+/g, ' ').trim();
+  return text.length > 160 ? text.slice(0, 160) + '…' : text;
+}
+
+function itemRow(a) {
+  const row = el('div', 'item' + (a.read ? '' : ' unread') + (a.id === S.cur ? ' sel' : ''));
+  row.dataset.id = a.id;
+  const title = el('div', 'title');
+  if (a.starred) title.append(el('span', 'star', '★ '));
+  title.append(a.title || 'No Title');
+  if (a.snip === undefined) a.snip = snippet(a.summary);
+  const foot = el('div', 'foot'), src = el('span', 'src');
+  src.append(el('b', '', a.feed || 'Unknown'), ' • ' + fmtDate(a.ts, false));
+  foot.append(src, el('span', 'new', 'unread'));
+  row.append(title, el('div', 'snippet', a.snip), foot);
+  return row;
+}
+
+function renderList(keepScroll) {
+  const list = $('list'), top = list.scrollTop;
+  list.textContent = '';
+  if (S.items.length === 0) {
+    list.append(el('div', 'empty', S.node ? 'No articles.' : 'Select a feed.'));
+  } else {
+    const frag = document.createDocumentFragment();
+    for (const a of S.items) frag.append(itemRow(a));
+    list.append(frag);
+  }
+  list.scrollTop = keepScroll ? top : 0;
+  $('allread').disabled = !S.items.some(a => !a.read);
+}
+
+function refreshRow(a) {
+  const old = $('list').querySelector(`.item[data-id="${CSS.escape(a.id)}"]`);
+  if (old) old.replaceWith(itemRow(a));
+  $('allread').disabled = !S.items.some(x => !x.read);
+}
+
+function openArticle(id) {
+  const a = S.items.find(x => x.id === id);
+  if (!a) return;
+  S.cur = id;
+  for (const row of $('list').querySelectorAll('.item.sel')) row.classList.remove('sel');
+  a.read = true;
+  refreshRow(a);
+  const row = $('list').querySelector('.item.sel');
+  if (row) row.scrollIntoView({ block: 'nearest' });
+  send({ op: 'open', id });
+}
+
+function step(delta) {
+  if (S.items.length === 0) return;
+  const i = S.items.findIndex(x => x.id === S.cur);
+  const j = i < 0 ? (delta > 0 ? 0 : S.items.length - 1) : i + delta;
+  if (j >= 0 && j < S.items.length) openArticle(S.items[j].id);
+}
+
+$('list').addEventListener('click', e => {
+  const row = e.target.closest('.item');
+  if (row) openArticle(row.dataset.id);
+});
+
+$('allread').addEventListener('click', markAllRead);
+function markAllRead() {
+  if (!S.node || !S.items.some(a => !a.read)) return;
+  send({ op: 'mark-all-read', node: S.node });
+}
+
+// ---------------------------------------------------------------- reader
+const ARTICLE_CSS = `
+:root { color-scheme: light dark; }
+body { font-family: "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; padding: 20px 40px 60px; max-width: 800px; margin: 0 auto; line-height: 1.6; font-size: 16px; overflow-wrap: break-word; }
+h1.winine-title { font-size: 28px; line-height: 1.25; margin: 0 0 20px; }
+img, video, iframe, svg { max-width: 100%; height: auto; }
+img { border-radius: 8px; }
+a { color: #0066cc; text-decoration: none; }
+a:hover { text-decoration: underline; }
+blockquote { padding: 0 1em; color: #6a737d; border-left: .25em solid #dfe2e5; margin: 0 0 16px 0; }
+code { padding: .2em .4em; font-size: 85%; background-color: rgba(27,31,35,.05); border-radius: 3px; font-family: Consolas, ui-monospace, "Cascadia Mono", monospace; }
+pre { padding: 16px; overflow: auto; font-size: 85%; line-height: 1.45; background-color: #f6f8fa; border-radius: 6px; }
+pre code { padding: 0; font-size: 100%; white-space: pre; background: transparent; }
+hr { height: .25em; padding: 0; margin: 24px 0; background-color: #e1e4e8; border: 0; }
+table { border-collapse: collapse; margin-bottom: 16px; display: block; overflow-x: auto; }
+table th, table td { padding: 6px 13px; border: 1px solid #dfe2e5; }
+table tr:nth-child(2n) { background-color: #f6f8fa; }
+@media (prefers-color-scheme: dark) {
+  a { color: #58a6ff; }
+  blockquote { color: #8b949e; border-left-color: #30363d; }
+  code { background-color: rgba(240,246,252,.15); }
+  pre { background-color: #161b22; }
+  hr { background-color: #30363d; }
+  table th, table td { border-color: #30363d; }
+  table tr:nth-child(2n) { background-color: #161b22; }
+}`;
+
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const isHttp = url => /^https?:\/\//i.test(url || '');
+
+function articleDoc(a) {
+  const base = isHttp(a.link) ? `<base href="${esc(a.link)}" target="_blank">` : '<base target="_blank">';
+  return '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+    `<meta http-equiv="Content-Security-Policy" content="script-src 'none'; object-src 'none'; form-action 'none'">` +
+    `<meta name="referrer" content="no-referrer">${base}<style>${ARTICLE_CSS}</style></head>` +
+    `<body><h1 class="winine-title">${esc(a.title || 'No Title')}</h1>${a.content || ''}</body></html>`;
+}
+
+function renderReadHead() {
+  const a = S.article;
+  if (!a) return;
+  const date = fmtDate(a.ts, true) || a.date || '';
+  $('meta').textContent = (a.feed || 'Unknown') + (date ? ' • ' + date : '');
+  $('meta').title = a.link || '';
+  $('starbtn').textContent = a.starred ? '★ Starred' : '☆ Star';
+  $('starbtn').classList.toggle('on', !!a.starred);
+  $('readbtn').textContent = a.read ? 'Mark Unread' : 'Mark Read';
+  $('origbtn').disabled = $('extbtn').disabled = !isHttp(a.link);
+}
+
+function showArticle(a) {
+  S.article = a;
+  $('reader').classList.remove('blank');
+  renderReadHead();
+  $('frame').srcdoc = articleDoc(a);
+}
+
+// The article document cannot run scripts, so clicks and keys inside it are
+// handled from here.  Links never navigate the frame: Emacs opens them.
+$('frame').addEventListener('load', () => {
+  let doc = null;
+  try { doc = $('frame').contentDocument; } catch (e) { /* cross-origin: links fall back to popups */ }
+  if (!doc) return;
+  doc.addEventListener('click', e => {
+    const a = e.target.closest ? e.target.closest('a[href]') : null;
+    if (!a) return;
+    e.preventDefault();
+    const raw = a.getAttribute('href') || '';
+    if (raw.startsWith('#')) {
+      const name = decodeURIComponent(raw.slice(1));
+      const target = doc.getElementById(name) || doc.getElementsByName(name)[0];
+      if (target) target.scrollIntoView();
+    } else if (isHttp(a.href)) {
+      send({ op: 'open-link', url: a.href });
+    }
+  }, true);
+  doc.addEventListener('keydown', e => onKey(e, true));
+});
+
+function toggleStar() {
+  const a = S.article;
+  if (!a) return;
+  setState(a.id, { starred: !a.starred });
+  send({ op: 'star', id: a.id, value: a.starred });
+}
+function toggleRead() {
+  const a = S.article;
+  if (!a) return;
+  setState(a.id, { read: !a.read });
+  send({ op: 'read', id: a.id, value: a.read });
+}
+function setState(id, patch) {
+  const item = S.items.find(x => x.id === id);
+  if (item) { Object.assign(item, patch); refreshRow(item); }
+  if (S.article && S.article.id === id) { Object.assign(S.article, patch); renderReadHead(); }
+}
+function openOriginal() { if (S.article && isHttp(S.article.link)) send({ op: 'open-link', url: S.article.link }); }
+function openExternal() { if (S.article && isHttp(S.article.link)) send({ op: 'open-external', url: S.article.link }); }
+function scrollReader(pages) {
+  const w = $('frame').contentWindow;
+  if (w && S.article) w.scrollBy({ top: pages * w.innerHeight * 0.9, behavior: 'auto' });
+}
+
+$('starbtn').addEventListener('click', toggleStar);
+$('readbtn').addEventListener('click', toggleRead);
+$('origbtn').addEventListener('click', openOriginal);
+$('extbtn').addEventListener('click', openExternal);
+$('refresh').addEventListener('click', () => send({ op: 'refresh' }));
+
+// ---------------------------------------------------------------- keys
+const COMMANDS = {
+  'next': () => step(1), 'prev': () => step(-1),
+  'star': toggleStar, 'toggle-read': toggleRead,
+  'open-original': openOriginal, 'open-external': openExternal,
+  'mark-all-read': markAllRead, 'refresh': () => send({ op: 'refresh' }),
+  'page-down': () => scrollReader(1), 'page-up': () => scrollReader(-1),
+};
+const KEYS = {
+  j: 'next', n: 'next', k: 'prev', p: 'prev', s: 'star', u: 'toggle-read',
+  o: 'open-original', Enter: 'open-original', b: 'open-external', r: 'refresh', A: 'mark-all-read',
+};
+// Only outside the article: inside it these keep their usual scrolling.
+const OUTER_KEYS = { ArrowDown: 'next', ArrowUp: 'prev', ' ': 'page-down' };
+
+function onKey(e, inArticle) {
+  if (e.ctrlKey || e.altKey || e.metaKey) return;
+  if (e.key === 'Escape') { send({ op: 'focus-emacs' }); return; }
+  let cmd = KEYS[e.key];
+  if (!cmd && !inArticle) cmd = e.key === ' ' && e.shiftKey ? 'page-up' : OUTER_KEYS[e.key];
+  if (!cmd) return;
+  if (e.key === 'Enter' && e.target.closest && e.target.closest('button, a')) return;
+  e.preventDefault();
+  COMMANDS[cmd]();
+}
+document.addEventListener('keydown', e => onKey(e, false));
+
+// ---------------------------------------------------------------- dividers
+for (const div of document.querySelectorAll('.divider')) {
+  const name = div.dataset.var, min = +div.dataset.min, max = +div.dataset.max;
+  const saved = store.get('winine-rss' + name, null);
+  if (saved) document.documentElement.style.setProperty(name, saved + 'px');
+  div.addEventListener('pointerdown', e => {
+    const start = e.clientX, from = div.previousElementSibling.getBoundingClientRect().width;
+    div.setPointerCapture(e.pointerId);
+    div.classList.add('drag');
+    $('frame').style.pointerEvents = 'none';   // or the frame swallows the drag
+    const move = ev => {
+      const w = Math.min(max, Math.max(min, from + ev.clientX - start));
+      document.documentElement.style.setProperty(name, w + 'px');
+      store.set('winine-rss' + name, w);
+    };
+    const up = () => {
+      div.classList.remove('drag');
+      $('frame').style.pointerEvents = '';
+      div.removeEventListener('pointermove', move);
+      div.removeEventListener('pointerup', up);
+      div.removeEventListener('pointercancel', up);
+    };
+    div.addEventListener('pointermove', move);
+    div.addEventListener('pointerup', up);
+    div.addEventListener('pointercancel', up);
+  });
+}
+
+// ---------------------------------------------------------------- messages from Emacs
+const HANDLERS = {
+  init(m) {
+    S.tree = m.tree; S.counts = m.counts; S.names = {};
+    renderTree();
+    HANDLERS.fetching(m.fetching);
+    selectNode(S.node in S.names ? S.node : (m.selected in S.names ? m.selected : 'unread'));
+  },
+  counts(m) { S.counts = m.counts; renderCounts(); },
+  articles(m) {
+    if (m.node !== S.node) return;          // an answer for a node we left
+    S.items = m.items;
+    renderList(!!m.keep);
+  },
+  article(m) {
+    if (m.article.id !== S.cur) return;     // an answer for an article we left
+    showArticle(m.article);
+  },
+  state(m) { setState(m.id, { read: m.read, starred: m.starred }); },
+  fetching(m) {
+    const btn = $('refresh');
+    btn.classList.toggle('spin', !!m.active);
+    btn.title = m.active ? `Fetching feeds… ${m.done}/${m.total}` : 'Refresh feeds (r)';
+  },
+  cmd(m) { if (COMMANDS[m.name]) COMMANDS[m.name](); },
+};
+
+S.collapsed = new Set(store.get('winine-rss-collapsed', []));
+renderList(false);
+if (wv) {
+  wv.addEventListener('message', e => {
+    const m = e.data;
+    if (m && HANDLERS[m.type]) HANDLERS[m.type](m);
+  });
+  send({ op: 'ready' });
+} else {
+  $('list').textContent = '';
+  $('list').append(el('div', 'empty', 'This page is the UI of M-x winine-rss; open it from Emacs.'));
+}
+</script>
+</body>
+</html>

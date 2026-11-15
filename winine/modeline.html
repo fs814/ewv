@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Greeting</title>
+    <script>
+        function updateModeLine(bufferName, selected, point, buffer_file_coding_system, buffer_read_only, buffer_modified_p) {
+            document.querySelector("#buffer-name").innerText = bufferName;
+            document.querySelector("#point").innerText = point;
+            document.querySelector("#buffer-file-coding-system").innerText = buffer_file_coding_system;
+            document.querySelector("#buffer-read-only").innerText = (buffer_read_only !== 'nil' )? '🔒' : '🔓';
+            document.querySelector("#buffer-modified-p").innerText = (buffer_modified_p !== 'nil') ? '📝' : '📄';
+            // document.querySelector("body").style.backgroundColor = (selected === 't') ? 'yellow' : 'green'
+            document.querySelector("body").style.backgroundColor = 'transparent' 
+	    // hello world is good test good this is good and bad
+        }
+    </script>
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            font-size: 20px;
+            /* width: 100% works fine as it defaults to the viewport width */
+            /* background-color: red; */
+            background-color: transparent;
+            background: transparent;
+        }
+
+        body {
+            min-height: 100vh;
+            /* background-color: green; */
+            font-size: 60vh;
+        }
+
+        .mode-line {
+            display: flex;
+            flex-direction: row;
+            /* This is the default behavior */
+            /* Additional properties for alignment/spacing */
+            justify-content: space-around;
+            /* Distributes space evenly between and around items */
+            align-items: center;
+            /* Aligns items vertically in the center */
+        }
+
+    </style>
+</head>
+
+<body>
+
+    <div class="mode-line">
+        <div id="buffer-file-coding-system"></div>
+        <div id="buffer-read-only"></div>
+        <div id="buffer-modified-p"></div>
+        <div id="buffer-name">buffer name</div>
+        <div id="point"></div>
+        
+        <div id="buffer-size">buffer size</div>
+    </div>
+    <script>
+        // window.chrome.webview.postMessage({ "type": "status", "value": "updated" })
+        async function main() {
+            async function emacs_eval(src) {
+                const bridge = window.chrome.webview.hostObjects.bridge;
+                return new Promise((resolve, reject) => {
+                    bridge.say_hello(src, (val) => {
+                        resolve(val)
+                    })
+                })
+            }
+            // console.error("callling main bridge = ", await bridge.say_hello("(emacs-version)", (val)=>console.error('val = ', val)))
+            // const rt = await .say_hello();
+            // console.error('rt = ', rt)
+            console.error("emacs-version = ", await emacs_eval("(emacs-version)"))
+            document.querySelector("#buffer-name").innerText = await emacs_eval("(buffer-name)");
+        }
+    </script>
+</body>
+
+</html>

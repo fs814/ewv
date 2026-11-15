@@ -30,6 +30,14 @@ include!("hooks.rs");
 mod dx12;
 include!("dx12_lisp.rs");
 
+// Khronos Vulkan-Samples in Emacs buffers (see src/vulkan/README.md).
+mod vks;
+include!("vks_lisp.rs");
+
+// Microsoft DirectX-Graphics-Samples in Emacs buffers (see src/dxsamples/README.md).
+mod dxs;
+include!("dxs_lisp.rs");
+
 struct Callback {
     rcb: Box<dyn FnOnce(&Env, Value) -> LispResult<()>>,
     gcb: Rc<GlobalRef>,
@@ -40,6 +48,8 @@ thread_local! {
     static EVENTS: RefCell<Vec<Box<dyn FnOnce(&Env)>>> = RefCell::new(Vec::new());
     static CALLBACKS: RefCell<Vec<Callback>> = RefCell::new(Vec::new());
     static DX12_VIEWS: RefCell<Vec<dx12::DxView>> = RefCell::new(Vec::new());
+    static VKS_VIEWS: RefCell<Vec<vks::VkView>> = RefCell::new(Vec::new());
+    static DXS_VIEWS: RefCell<Vec<dxs::DxsView>> = RefCell::new(Vec::new());
 }
 
 pub fn initialize_com() {
